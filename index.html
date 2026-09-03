@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>WebUntis Legacy</title>
+    <style>
+        body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 0; padding: 10px; background: #f2f2f6; color: #000; }
+        h2 { text-align: center; margin-top: 5px; margin-bottom: 15px; }
+        .box { background: #fff; padding: 15px; border-radius: 8px; border: 1px solid #ccc; margin-bottom: 15px; max-width: 700px; margin-left: auto; margin-right: auto; }
+        input, button { width: 100%; padding: 12px; margin: 6px 0; font-size: 16px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; }
+        button { background-color: #007aff; color: #fff; border: none; font-weight: bold; cursor: pointer; }
+        button:active { background-color: #0056b3; }
+        .nav-btn { width: 32%; display: inline-block; margin: 2px 0; padding: 8px; font-size: 14px; }
+        .hidden { display: none; }
+        table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 13px; }
+        th { background-color: #e5e5ea; }
+        .day-header { background-color: #d1d1d6; font-weight: bold; text-align: left; padding: 8px 12px; }
+        
+        /* Subject Color Coding */
+        .subject-deutsch { background-color: #ffc0cb !important; } /* Pink */
+        .subject-mathe { background-color: #fff59d !important; }   /* Yellow */
+        .subject-englisch { background-color: #90caf9 !important; }/* Blue */
+
+        /* Lesson States */
+        .cancelled { background-color: #ffcccc !important; text-decoration: line-through; }
+        .substitute { border: 2px solid #f57f17; font-weight: bold; }
+        .regular { background-color: #ffffff; }
+        .status-msg { text-align: center; font-weight: bold; padding: 10px; color: #666; }
+    </style>
+</head>
+<body>
+
+<h2>WebUntis Legacy</h2>
+
+<div id="login-box" class="box">
+    <input type="text" id="server" placeholder="Server (e.g. your-school.webuntis.com)">
+    <input type="text" id="school" placeholder="School Shortname (e.g. your-school)">
+    <input type="text" id="user" placeholder="Username">
+    <input type="password" id="pass" placeholder="Password">
+    <button onclick="login()">Log In</button>
+</div>
+
+<div id="app-box" class="box hidden">
+    <div style="text-align: center; margin-bottom: 10px;">
+        <button class="nav-btn" onclick="navigateDate(-1)">&laquo; Prev</button>
+        <button class="nav-btn" style="background-color: #34c759;" onclick="resetToToday()">Today</button>
+        <button class="nav-btn" onclick="navigateDate(1)">Next &raquo;</button>
+    </div>
+    <div style="text-align: center; margin-bottom: 10px;">
+        <button class="nav-btn" style="width: 48%; background-color: #5856d6;" onclick="setView('day')">Day View</button>
+        <button class="nav-btn" style="width: 48%; background-color: #5856d6;" onclick="setView('week')">Week View (Mon-Fri)</button>
+    </div>
+    
+    <button onclick="fetchTimetable()">Refresh</button>
+    <button onclick="logout()" style="background-color: #ff3b30;">Log Out</button>
+    
+    <div id="timetable-container"></div>
+</div>
+
+<script>
+    var sessionId = "";
+    var personId = 0;
+    var personType = 5; // Default Student
+    var subjectsMap = {};
+    var roomsMap = {};
+    var teachersMap = {};
+    
+    var currentDate = new Date();
+    var currentView = 'day'; // 'day' or 'week'
+
+    // Auto-login on page load if credentials exist in localStorage
+    window.onload = function() {
+        var savedServer = localStorage.getItem('untis_server');
+        var savedSchool = localStorage.getItem('untis_school');
+        var savedUser = localStorage.getItem('untis_user');
+        var savedPass = localStorage.getItem('untis_pass');
+
+        if (savedServer) document.getElementById('server').value = savedServer;
+        if (savedSchool) document.getElementById('school').value = savedSchool;
+        if (savedUser) document.getElementById('user').value = savedUser;
+        if (savedPass) document.getElementById('pass').value = savedPass;
+
+        if (savedServer && savedSchool && savedUser && savedPass) {
+            login();
+        }
+    };
+
+    function postJSON(url, body, callback) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200) {
+                    try {
+                        var res = JSON.parse(xhr.responseText);
+                        callback(null, res);
+                    } catch (e) {
+                        callback("Invalid server response JSON");
+                    }
+                } else {
+                    callback("HTTP Error " + xhr.status);
+                }
+            }
+        };
+        xhr.send(JSON.stringify(body));
+    }
+
+    function callWebUntis(method, params, callback) {
+        var payload = {
+            id: new Date().getTime().toString(),
+            method: method,
+            params: params || {},
+            jsonrpc: "2.0"
+        };
+
+        var requestData = {
+            server: document.getElementById('server').value,
+            school: document.getElementById('school').value,
+            payload: payload,
+            sessionId: sessionId
+        };
+
+        postJSON("proxy.php", requestData, callback);
+    }
+
+    function login() {
+        var server = document.getElementById('server').value;
+        var school = document.getElementById('school').value;
+        var user = document.getElementById('user').value;
+        var pass = document.getElementById('pass').value;
+
+        callWebUntis("authenticate", { user: user, password: pass, client: "LegacyiPad" }, function (err, res) {
+            if (err || (res && res.error)) {
+                var msg = (res && res.error) ? res.error.message : err;
+                alert("Login Failed: " + msg);
+                return;
+            }
+
+            // Store credentials for auto-login
+            localStorage.setItem('untis_server', server);
+            localStorage.setItem('untis_school', school);
+            localStorage.setItem('untis_user', user);
+            localStorage.setItem('untis_pass', pass);
+
+            sessionId = res.result.sessionId;
+            personId = res.result.personId;
+            personType = res.result.personType;
+
+            document.getElementById('login-box').className = "box hidden";
+            document.getElementById('app-box').className = "box";
+
+            loadMasterData(function () {
+                fetchTimetable();
+            });
+        });
+    }
+
+    function loadMasterData(callback) {
+        document.getElementById('timetable-container').innerHTML = "<div class='status-msg'>Loading subjects, rooms & teachers...</div>";
+        
+        callWebUntis("getSubjects", {}, function (err1, res1) {
+            if (!err1 && res1 && res1.result) {
+                for (var i = 0; i < res1.result.length; i++) {
+                    var s = res1.result[i];
+                    subjectsMap[s.id] = s.name || s.longname;
+                }
+            }
+
+            callWebUntis("getRooms", {}, function (err2, res2) {
+                if (!err2 && res2 && res2.result) {
+                    for (var j = 0; j < res2.result.length; j++) {
+                        var r = res2.result[j];
+                        roomsMap[r.id] = r.name || r.longname;
+                    }
+                }
+
+                callWebUntis("getTeachers", {}, function (err3, res3) {
+                    if (!err3 && res3 && res3.result) {
+                        for (var k = 0; k < res3.result.length; k++) {
+                            var t = res3.result[k];
+                            teachersMap[t.id] = t.name || (t.foreName ? t.foreName.substring(0,1) + ". " + t.lastName : t.lastName);
+                        }
+                    }
+                    callback();
+                });
+            });
+        });
+    }
+
+    function formatDate(d) {
+        var yyyy = d.getFullYear().toString();
+        var mm = (d.getMonth() + 1).toString();
+        var dd = d.getDate().toString();
+        if (mm.length < 2) mm = '0' + mm;
+        if (dd.length < 2) dd = '0' + dd;
+        return yyyy + mm + dd;
+    }
+
+    function formatTime(t) {
+        var str = t.toString();
+        while (str.length < 4) str = '0' + str;
+        return str.substring(0, 2) + ":" + str.substring(2, 4);
+    }
+
+    function getMonday(d) {
+        var date = new Date(d);
+        var day = date.getDay();
+        var diff = date.getDate() - day + (day === 0 ? -6 : 1);
+        return new Date(date.setDate(diff));
+    }
+
+    function navigateDate(days) {
+        if (currentView === 'week') {
+            currentDate.setDate(currentDate.getDate() + (days * 7));
+        } else {
+            currentDate.setDate(currentDate.getDate() + days);
+        }
+        fetchTimetable();
+    }
+
+    function resetToToday() {
+        currentDate = new Date();
+        fetchTimetable();
+    }
+
+    function setView(viewMode) {
+        currentView = viewMode;
+        fetchTimetable();
+    }
+
+    function fetchTimetable() {
+        document.getElementById('timetable-container').innerHTML = "<div class='status-msg'>Loading timetable...</div>";
+
+        var startDate, endDate;
+
+        if (currentView === 'week') {
+            var monday = getMonday(currentDate);
+            var friday = new Date(monday);
+            friday.setDate(friday.getDate() + 4);
+
+            startDate = formatDate(monday);
+            endDate = formatDate(friday);
+        } else {
+            startDate = formatDate(currentDate);
+            endDate = formatDate(currentDate);
+        }
+
+        var params = {
+            options: {
+                id: personId,
+                type: personType,
+                element: { id: personId, type: personType },
+                startDate: parseInt(startDate, 10),
+                endDate: parseInt(endDate, 10)
+            }
+        };
+
+        callWebUntis("getTimetable", params, function (err, res) {
+            if (err || (res && res.error)) {
+                var errorMsg = (res && res.error) ? res.error.message : err;
+                alert("Failed to load timetable: " + errorMsg);
+                document.getElementById('timetable-container').innerHTML = "<div class='status-msg'>Error loading timetable.</div>";
+                return;
+            }
+
+            var lessons = res.result || [];
+            
+            // Group lessons by date
+            var lessonsByDate = {};
+            for (var i = 0; i < lessons.length; i++) {
+                var d = lessons[i].date;
+                if (!lessonsByDate[d]) lessonsByDate[d] = [];
+                lessonsByDate[d].push(lessons[i]);
+            }
+
+            var html = "";
+
+            if (currentView === 'week') {
+                var mon = getMonday(currentDate);
+                for (var dayIdx = 0; dayIdx < 5; dayIdx++) {
+                    var dayObj = new Date(mon);
+                    dayObj.setDate(dayObj.getDate() + dayIdx);
+                    var dStr = formatDate(dayObj);
+                    var dayLessons = lessonsByDate[dStr] || [];
+
+                    html += renderDayTable(dayObj, dayLessons);
+                }
+            } else {
+                var dayLessons = lessonsByDate[startDate] || [];
+                html += renderDayTable(currentDate, dayLessons);
+            }
+
+            document.getElementById('timetable-container').innerHTML = html;
+        });
+    }
+
+    function renderDayTable(dateObj, lessons) {
+        var daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        var dayTitle = daysOfWeek[dateObj.getDay()] + ", " + dateObj.toLocaleDateString();
+
+        var html = "<table>" +
+            "<tr><th colspan='4' class='day-header'>" + dayTitle + "</th></tr>" +
+            "<tr><th>Time</th><th>Subject</th><th>Teacher</th><th>Room</th></tr>";
+
+        if (!lessons || lessons.length === 0) {
+            html += "<tr><td colspan='4'>No lessons scheduled.</td></tr>";
+        } else {
+            lessons.sort(function(a, b) { return a.startTime - b.startTime; });
+
+            for (var i = 0; i < lessons.length; i++) {
+                var l = lessons[i];
+                var isCancelled = (l.cellState === "CANCELLED" || l.code === "cancelled");
+                var isSubstitute = (l.cellState === "SUBSTITUTE" || l.code === "irregular" || l.code === "subst");
+
+                // Resolve Subject
+                var subject = "-";
+                if (l.su && l.su.length > 0) {
+                    var suObj = l.su[0];
+                    subject = suObj.name || suObj.longname || subjectsMap[suObj.id] || ("ID " + suObj.id);
+                }
+
+                // Enhanced Matching for Course Names (e.g. "D G1", "M G1", "E G3")
+                var subjectUpper = subject.toUpperCase().trim();
+                var colorClass = "";
+
+                if (subjectUpper === "D" || subjectUpper.indexOf("D ") === 0 || subjectUpper.indexOf("DEUTSCH") !== -1) {
+                    colorClass = "subject-deutsch";
+                } else if (subjectUpper === "M" || subjectUpper.indexOf("M ") === 0 || subjectUpper.indexOf("MATHE") !== -1) {
+                    colorClass = "subject-mathe";
+                } else if (subjectUpper === "E" || subjectUpper.indexOf("E ") === 0 || subjectUpper.indexOf("ENGLISCH") !== -1) {
+                    colorClass = "subject-englisch";
+                }
+
+                // State Classes
+                var statusClass = "";
+                if (isCancelled) {
+                    statusClass = "cancelled";
+                } else if (isSubstitute) {
+                    statusClass = "substitute";
+                } else if (!colorClass) {
+                    statusClass = "regular";
+                }
+
+                // Resolve Teacher
+                var teacher = "-";
+                if (l.te && l.te.length > 0) {
+                    var teObj = l.te[0];
+                    teacher = teObj.name || teObj.longname || teachersMap[teObj.id] || ("ID " + teObj.id);
+                }
+
+                // Resolve Room
+                var room = "-";
+                if (l.ro && l.ro.length > 0) {
+                    var roObj = l.ro[0];
+                    room = roObj.name || roObj.longname || roomsMap[roObj.id] || ("ID " + roObj.id);
+                }
+
+                var timeStr = formatTime(l.startTime) + " - " + formatTime(l.endTime);
+
+                html += "<tr class='" + statusClass + " " + colorClass + "'>" +
+                    "<td>" + timeStr + "</td>" +
+                    "<td>" + subject + "</td>" +
+                    "<td>" + teacher + "</td>" +
+                    "<td>" + room + "</td>" +
+                    "</tr>";
+            }
+        }
+
+        html += "</table><br>";
+        return html;
+    }
+
+    function logout() {
+        localStorage.removeItem('untis_server');
+        localStorage.removeItem('untis_school');
+        localStorage.removeItem('untis_user');
+        localStorage.removeItem('untis_pass');
+
+        callWebUntis("logout", {}, function () {
+            sessionId = "";
+            document.getElementById('login-box').className = "box";
+            document.getElementById('app-box').className = "box hidden";
+            document.getElementById('timetable-container').innerHTML = "";
+        });
+    }
+</script>
+</body>
+</html>
